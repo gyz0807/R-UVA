@@ -1,0 +1,360 @@
+---
+title: "Investigation of Pizza Requests"
+author: "Cody Stancil, Lulu Ge, Seth Green, Yizhe Ge"
+date: "July 29, 2016"
+output: 
+        pdf_document
+fontsize: 11pt
+font: Calibri
+header-includes:
+        - \usepackage{pdfpages}
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+```
+
+# Parsing Data into R Data.Frame
+We initially got the data into R by using the `read_lines` function in the {readr} package. Once we had the data in R as a character vector, we began looping through the lines to extract the column names. Throughout this code, we make use of Regular Expressions, fed into various base R functions including `grep`, `grepl`, `gsub`, and `sub`. In particular, the function `gsub('\\"', "", <string>)` is used repeatedly to strip all of the `\”` out of a string, and `grepl('^\\”', <line>)` to check whether a line starts with a quotation mark.
+
+The body of the loop trims whitespace off each line and then splits it at `: `. Next it checks two conditions to filter out %%%% delimiters and subreddit lines. If both of those conditions are met, the first element of the split line is stripped of its `\”` and then fed into a character vector of variable names. Once the loop finishes, an empty data.frame is created with those variable names.
+
+Next, we loop back through the entire raw input file, in order to populate the observations. To summarize, a count is initialized to keep track of which observation we are recording. Then, each line is split on the first colon (because some of the character fields contain a colon). The same conditions as the first loop are checked and then the content is placed in the matching variable and observation. When a %%%% is encountered, the count is incremented by 0.5 (because two lines of %%%% indicate the next observation).
+
+```{r echo=FALSE}
+library(gridExtra)
+library(stylo)
+
+#load the data
+df <- readRDS("pizzaDataDF")
+
+# subset pizza from no pizza
+dfT <- df[df$requester_received_pizza=="true", ]
+dfF <- df[df$requester_received_pizza=="false", ]
+#subset only character variables
+dfTw <- dfT[, c("request_text", "request_title")]
+dfFw <- dfF[, c("request_text", "request_title")]
+
+# tokenize into word vectors
+textT <- txt.to.words(dfTw[,1], preserve.case = F)
+titleT <- txt.to.words(dfTw[,2], preserve.case = F)
+textF <- txt.to.words(dfFw[,1], preserve.case = F)
+titleF <- txt.to.words(dfFw[,2], preserve.case = F)
+
+# make word frequency tables
+textTDF <- as.data.frame(table(textT), stringsAsFactors = F) 
+textTDF <- textTDF[order(textTDF$Freq, decreasing = T),]
+titleTDF <- as.data.frame(table(titleT), stringsAsFactors = F) 
+titleTDF <- titleTDF[order(titleTDF$Freq, decreasing = T),]
+
+textFDF <- as.data.frame(table(textF), stringsAsFactors = F) 
+textFDF <- textFDF[order(textFDF$Freq, decreasing = T),]
+titleFDF <- as.data.frame(table(titleF), stringsAsFactors = F) 
+titleFDF <- titleFDF[order(titleFDF$Freq, decreasing = T),]
+
+# Find the words that are unique to people that got pizza
+inTrue <- function(num, vecTrue, vecFalse) { # vecs need to be sorted by Freq
+  cutTrue <- vecTrue[1:num]
+  cutFalse <- vecFalse[1:num]
+  cutTrue[!cutTrue %in% cutFalse]
+}
+
+# inTrue(10, textTDF[,1], textFDF[,1])
+# inTrue(10, titleTDF[,1], titleFDF[,1])
+
+# which are in true, but not in False Top 100
+inTrueF100 <- function(num, vecTrue, vecFalse) { # vecs need to be sorted by Freq
+  cutTrue <- vecTrue[1:num]
+  cutFalse <- vecFalse[1:100]
+  cutTrue[!cutTrue %in% cutFalse]
+}
+
+# inTrueF100(200, textTDF[,1], textFDF[,1])
+# inTrueF100(200, titleTDF[,1], titleFDF[,1])
+
+#####
+winners <- as.data.frame(matrix(NA, ncol=5, nrow=4))
+names(winners) <- c("threshold", "text", "title", "textF100", "titleF100")
+
+thresh <- c(10, 50, 100, 200)
+row <- 1
+for (i in thresh) {
+  winners[row, 1] <- i
+  winners[row, 2] <- paste(inTrue(i, textTDF[,1], textFDF[,1]), collapse = ", ")
+  winners[row, 3] <- paste(inTrue(i, titleTDF[,1], titleFDF[,1]), collapse = ", ")
+  winners[row, 4] <- paste(inTrueF100(i, textTDF[,1], textFDF[,1]), collapse = ", ")
+  winners[row, 5] <- paste(inTrueF100(i, titleTDF[,1], titleFDF[,1]), collapse = ", ")
+  row <- row + 1
+}
+
+pickDF <- function(threshold, set) {
+  words <- winners[winners$threshold==threshold, set]
+  words <- unlist(strsplit(words, ", "))
+  #words
+  titleTDF[titleTDF$titleT %in% words, ]
+}
+
+pickDF <- function(threshold, set) {
+  words <- winners[winners$threshold==threshold, set]
+  words <- unlist(strsplit(words, ", "))
+  #words
+  if (substr(set,1,3)=="tit") {
+    titleTDF[titleTDF$titleT %in% words, ]
+  } else {
+    textTDF[textTDF$textT %in% words, ]
+  }
+}
+
+resultsTitle <- pickDF(100, "title")
+resultsText <- pickDF(200, "text")
+
+row.names(resultsTitle) <- NULL
+names(resultsTitle)[1] <- "words in title"
+row.names(resultsText) <- NULL
+names(resultsText)[1] <- "words in text"
+```
+
+# Warm-up Analysis
+We investigated seven numeric variables recording feedback of request from internet users. The data shows that people who grant the pizza in the end always have higher numbers of votes and comments on their requests, whatever it is count of upvotes only, or count of absolute upvotes (number of upvotes - number of downvotes), or sum of all votes. So there is a better chance to get pizza if the request is more popular than others.     
+
+\begin{center}
+        \includegraphics{Picture3}
+\end{center}
+
+```{r}
+#####Data Analysis#####
+
+#check correlation between request popularity and getting pizza
+# df$requester_upvotes_minus_downvotes_at_request <- as.numeric(df$requester_upvotes_minus_downvotes_at_request)
+# df$requester_upvotes_plus_downvotes_at_request <- as.numeric(df$requester_upvotes_plus_downvotes_at_request)
+# df$requester_upvotes_minus_downvotes_at_retrieval <- as.numeric(df$requester_upvotes_minus_downvotes_at_retrieval)
+# df$requester_upvotes_plus_downvotes_at_retrieval <- as.numeric(df$requester_upvotes_plus_downvotes_at_retrieval)
+# df$request_number_of_comments_at_retrieval <- as.numeric(df$request_number_of_comments_at_retrieval)
+# df$number_of_downvotes_of_request_at_retrieval <- as.numeric(df$number_of_downvotes_of_request_at_retrieval)
+# df$number_of_upvotes_of_request_at_retrieval <- as.numeric(df$number_of_upvotes_of_request_at_retrieval)
+# by_result = group_by(df,requester_received_pizza)
+# avg<-summarise(by_result,avg1 = mean(requester_upvotes_plus_downvotes_at_request),
+#              avg2 = mean(requester_upvotes_minus_downvotes_at_request),
+#              avg3 = mean(requester_upvotes_plus_downvotes_at_retrieval),
+#              avg4 = mean(requester_upvotes_minus_downvotes_at_retrieval),
+#              avg5 = mean(number_of_upvotes_of_request_at_retrieval),
+#              avg6 = mean(number_of_downvotes_of_request_at_retrieval),
+#              avg7 = mean(request_number_of_comments_at_retrieval))
+# avg
+# colours <- c("blue","orange")
+# par(mfrow=c(2,1))
+# barplot(as.matrix(avg[,6:8]), main="Mean Difference on Votes and comments", ylab = "Numbers of Votes/comments for the request",  
+#         names.arg = c("Number of upvotes of request at retrieval",
+#                       "Number of downvotes of request at retrieval",
+#                       "Request number of comments at retrieval"),beside=TRUE, col=colours)
+# legend("topleft",c("No Pizza","Pizza"),fill = colours, bty = "n")
+# 
+# colours <- c("blue","orange")
+# barplot(as.matrix(avg[,2:5]), main="Mean Difference on Votes", ylab = "Numbers of Votes",  
+#         names.arg = c("Upvotes plus Downvotes at request",
+#                       "Upvotes minus Downvotes at request",
+#                       "Upvotes plus Downvotes at retrieval",
+#                       "Upvotes minus Downvotes at retrieval"),beside=TRUE, col=colours)
+# legend("topleft",c("No Pizza","Pizza"),fill = colours, bty = "n")
+# 
+# #check correlation between requester activity in Reddit and getting pizza
+# df$requester_number_of_comments_at_request <- as.numeric(df$requester_number_of_comments_at_request)
+# df$requester_number_of_comments_at_retrieval <- as.numeric(df$requester_number_of_comments_at_retrieval)
+# df$requester_number_of_comments_in_raop_at_request <- as.numeric(df$requester_number_of_comments_in_raop_at_request)
+# df$requester_number_of_comments_in_raop_at_retrieval <- as.numeric(df$requester_number_of_comments_in_raop_at_retrieval)
+# df$requester_number_of_posts_at_request <- as.numeric(df$requester_number_of_posts_at_request)
+# df$requester_number_of_posts_at_retrieval <- as.numeric(df$requester_number_of_posts_at_retrieval)
+# df$requester_number_of_posts_on_raop_at_request <- as.numeric(df$requester_number_of_posts_on_raop_at_request)
+# df$requester_number_of_posts_on_raop_at_retrieval <- as.numeric(df$requester_number_of_posts_on_raop_at_retrieval)
+# by_result = group_by(df,requester_received_pizza)
+# comments <-summarise(by_result,c1 = mean(requester_number_of_comments_at_request),
+#                                c2 = mean(requester_number_of_comments_at_retrieval),
+#                                c3 = mean(requester_number_of_comments_in_raop_at_request),
+#                                c4 = mean(requester_number_of_comments_in_raop_at_retrieval),
+#                                c5 = mean(requester_number_of_posts_at_request),
+#                                c6 = mean(requester_number_of_posts_at_retrieval),
+#                                c7 = mean(requester_number_of_posts_on_raop_at_request),
+#                                c8 = mean(requester_number_of_posts_on_raop_at_retrieval))
+# comments
+# colours <- c("blue","orange")
+# par(mfrow=c(2,2))
+# barplot(as.matrix(comments[,2:3]), main="Number of comments on Reddit by Requester", ylab = "Numbers of comments by requester",  
+#         names.arg = c("Requester # of comments at request",
+#                       "Requester # of comments at retrieval"),beside=TRUE, col=colours)
+# legend("topleft",c("No Pizza","Pizza"),fill = colours, bty = "n")
+# 
+# barplot(as.matrix(comments[,4:5]), main="Number of comments in RAOP by Requester", ylab = "Numbers of comments by requester",  
+#         names.arg = c("Requester # of comments in raop at request",
+#                       "Requester # of comments in raop at retrieval"),beside=TRUE, col=colours)
+# legend("topleft",c("No Pizza","Pizza"),fill = colours, bty = "n")
+# 
+# barplot(as.matrix(comments[,6:7]), main="Number of posts on Reddit by Requester", ylab = "Numbers of posts by requester",  
+#         names.arg = c("Requester # of posts at request",
+#                       "Requester # of posts at retrieval"),beside=TRUE, col=colours)
+# legend("topleft",c("No Pizza","Pizza"),fill = colours, bty = "n")
+# 
+# barplot(as.matrix(comments[,8:9]), main="Number of posts in RAOP by Requester", ylab = "Numbers of posts by requester",  
+#         names.arg = c("Requester # of posts in raop at request",
+#                       "Requester # of posts in raop at retrieval"),beside=TRUE, col=colours)
+# legend("topleft",c("No Pizza","Pizza"),fill = colours, bty = "n")
+```
+
+# Mean Difference Analysis
+To better understand which variables led to a successful pizza request, we took a normalized difference of means between all of the variables for users who received a pizza and users who did not. Normalization was helpful in making comparisons between the impacts of each variable since they were put on the same scale with mean zero.  To normalize the data, we used the following formula:    
+
+\begin{center}
+Given variable X: ($x_i$ - $\bar{x}$)/s   
+\end{center}
+
+After the observations were normalized, we took the mean of each variable for successful and unsuccessful requests. The differences between the means of the respective variables in the two categories were then taken. The following figure displays these normalized differences. 
+
+The data can be categorized by when the data trail stopped i.e. time of request or time of retrieval. We noticed the normalized differences of the retrieval data is always greater than its respective variable that stopped at the point of request. This makes sense because the retrieval data includes all of the request data plus all of the information past the request up to the retrieval date. Moreover, one might expect the most predictive power to be the users activity directly after the pizza request was made; this further explains why retrieval data is always higher than the request data. 
+
+From the analysis, we were able to better understand what led to a successful pizza request. The top three ranked variables included: requester number of posts on “raop” at retrieval, requester number of comments at retrieval, and requester number of comments in “raop” at retrieval.  On average, the mean requester number of posts on “raop” at retrieval for successful pizza requesters was more than 1 standard deviation higher than the number of comments in “roap” made by unsuccessful requesters. In addition, two of the top three ranked variables were interactions in “roap”; this suggests that to be more successful one should spend more time interacting with “roap”.  Lastly, from the following Figure, the time variables seem to be predictors of the outcome of a pizza request. These variables display that requesters were more likely to be successful if they made the request closer to when “roap” began. This suggests the “roap” thread was more of a fad that was more successful at first and has died out over time. 
+
+```{r, fig.height=3, fig.width=6, fig.align="center"}
+library(ggplot2)
+getDiff <- function(varName) {
+  var <- as.numeric(df[,varName])
+  mnv <- mean(var)
+  sdv <- sd(var)
+  
+  varT <- as.numeric(df[df$requester_received_pizza=="true", varName])
+  varF <- as.numeric(df[df$requester_received_pizza=="false", varName])
+  diffRaw <- mean(varT) - mean(varF)
+  
+  varTnorm <- (varT - mnv) / sdv
+  varFnorm <- (varF - mnv) / sdv
+  diffNorm <- mean(varTnorm) - mean(varFnorm)
+  
+  c(diffRaw, diffNorm)
+}
+
+vars <- names(df)
+diffsDF <- data.frame(matrix(NA, nrow=ncol(df), ncol=4))
+names(diffsDF) <- c("variable", "diffRaw", "diffNorm", "req.ret")
+
+for (i in 1:ncol(df)) {
+  diffsDF[i,1] <- vars[i]
+  diffsDF[i,2:3] <- getDiff(vars[i])
+  if (grepl("retrieval$", vars[i])) {
+    diffsDF[i,4] <- "at retrieval"
+  } else {
+    diffsDF[i,4] <- "at request"
+  }
+}
+
+diffsDF <- diffsDF[order(diffsDF$diffNorm, decreasing = T),]
+
+diffsDF$req.ret <- as.factor(diffsDF$req.ret)
+diffsDF <- diffsDF[!is.na(diffsDF$diffRaw), ]
+
+ggplot(diffsDF,
+       aes(x=reorder(variable, diffNorm), y=diffNorm, fill = req.ret)) +
+  geom_bar(stat="identity") +
+  theme_bw(base_family = "Helvetica") + coord_flip() +
+  labs(list(y="Normalized Difference", x="Variable Names")) +
+  scale_fill_discrete(name="") +
+        theme(text = element_text(size = 10),
+              axis.title.x = element_text(size = 9),
+              axis.title.y = element_text(size=9))
+```
+
+# Looking at Word Frequencies
+
+We decided to see if certain words appeared frequently in successful pizza requests that did not appear in unsuccessful pizza requests. We subset out the `request_title` and `request_text` variables and then divided them into TRUE and FALSE sets based on whether or not they received pizza.
+
+To process the text, we used the {stylo} library to get an ordered table of word frequencies for each subset. After a bit of exploratory analysis, we settled on some thresholds that made sense to compare: for the title, we compared the Top 100 most frequent words and for the request text we looked at the Top 200 most frequent words. Finally we filtered down to the list of words that appeared in the Top 100 for titles of successful requests, but did not appear in the Top 100 for unsuccessful requests. We did the same for text, but with the Top 200.
+
+This analysis wasn't terribly illuminating, but we did notice some interesting words. For instance, “ramen” and “unemployed” were featured in a lot of successful titles, but were much less frequent in unsuccessful titles. For the request text, similarly notable words were “paycheck” and “bills.” Apparently sympathy is a strong motivator. The full tables are below:
+
+\newcommand\tab[1][0.3cm]{\hspace*{#1}}
+\textbf{Unique Words in Successful Text} \tab \tab \textbf{Unique Words in Successful Title}
+
+```{r echo=F, fig.height=3}
+library(grid)
+mytheme <- gridExtra::ttheme_default(
+    core = list(fg_params=list(cex = 0.6)),
+    colhead = list(fg_params=list(cex = 0.6)),
+    rowhead = list(fg_params=list(cex = 0.6)))
+p1 <- tableGrob(resultsText, theme = mytheme)
+p2 <- tableGrob(resultsTitle, theme = mytheme)
+grid.draw(arrangeGrob(p1, p2, ncol=2))
+```
+
+# When Should You Request For a Pizza? (Time Analysis)
+We first tried to do a time series analysis, but we could not find anything interesting. So we decided to see if there is anything interesting by just analyzing the hours. We did this by converting the variable `unix_timestamp_of_request` to `POSIXct` format. Then, we used the `lubridate` library to process the time and get the hours. The `requester_received_pizza` was then grouped based on hours. We calculated the probability of receiving a pizza by dividing the number of pizza received by the total number of requests for each group.
+
+We found out that 8am-1pm requests have a higher probability of being accepted compared to other request times. The following plot shows the visualization of our results:
+
+```{r, fig.height=2, fig.width=6}
+library(dplyr)
+library(ggplot2)
+library(lubridate)
+df$unix_timestamp_of_request <- as.POSIXct(as.numeric(df$unix_timestamp_of_request), origin="1970-01-01")
+
+# hour analysis
+df.hours <- df %>% 
+        select(unix_timestamp_of_request, requester_received_pizza) %>% 
+        mutate(requester_received_pizza = (requester_received_pizza=="true")*1,
+               hours = hour(unix_timestamp_of_request)) %>% 
+        group_by(hours) %>% 
+        summarize(success = sum(requester_received_pizza), total = n(), successRate = round(success/total, 2)) %>% 
+        arrange(desc(successRate))
+hour.order <- df.hours$hours
+df.hours$hours <- factor(df.hours$hours, levels = hour.order)
+plot.bar <- ggplot(data=df.hours, aes(x = hours, y = successRate)) +
+        labs(list(y = "Prob. Receive Pizza", x = "Hour")) +
+        geom_bar(stat="identity", fill = "lightblue", col = "black")
+plot.bar
+```
+
+# Predicting using Decision Trees
+We tried to predict whether the requesters actually received pizza by using a `Decision Tree Model`. Specifically, we combined the use of `rpart` and `caret` packages to do the regression. We first filtered out the variables that could not be easily used to do the regression. For example, `request_title` and `request_text`. In order to validate our prediction after we built the model, we separated the whole dataset into two parts - training dataset and testing dataset. We then transformed the predictor variables into appropriate formats, and applied the `rpart` function to them. The `rattle` package is used at the end for visualizing our predictive model.
+
+We got a prediction result that had a 97.43% sensitivity but only a 41.05% specificity. This means that our prediction model can successfully predict the false case 97.43% of the time, but we can only correctly predict the true case 41.05% of the time. Because most of the receivers did not get the pizza at the end, we got an accuracy of 83.54%.
+```{r, fig.align="center", fig.height=1}
+df2 <- df %>% 
+        select(-request_id, -request_text, -request_text_edit_aware, -request_title, 
+               -requester_subreddits_at_request, -requester_username, -in_test_set,
+               -post_was_edited, -unix_timestamp_of_request, -requester_user_flair,
+               -giver_username_if_known) %>% 
+        mutate(requester_received_pizza = factor(requester_received_pizza))
+
+for (i in c(1:16, 18:22)){
+        df2[,i] <- as.numeric(as.character(df2[,i]))
+}
+
+library(caret)
+library(grid); library(gridExtra)
+set.seed(666)
+inTrain <- createDataPartition(df2$requester_received_pizza, p=0.7, list=FALSE)
+training <- df2[inTrain, ]
+testing <- df2[-inTrain, ]
+
+modFit <- train(requester_received_pizza ~ ., data=training, method="rpart")
+
+pred <- predict(modFit, newdata = testing)
+tab <- tableGrob(confusionMatrix(pred, testing$requester_received_pizza)$table, theme=mytheme)
+grid.draw(tab)
+```
+
+The following plot visualizes our `Decision Tree Model`:
+
+```{r, fig.height=3, fig.width=6, fig.align="center"}
+library(rattle)
+fancyRpartPlot(modFit$finalModel, sub = "")
+```
+
+
+\newpage
+# Appendix
+1. How many requests resulted in granting pizza, and how many did not?   
+Answer:    
+Granted: 1397    
+Not Granted: 4274
+
+2. What is the average number of subReddits subscribed to by those who did not get a pizza?  
+Answer: 17.37833
+
+3. What is the average number of down votes at retrieval for those requests that were successful?  
+Answer: 2.631353
