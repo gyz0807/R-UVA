@@ -1,0 +1,428 @@
+---
+title: "Investigation of the Movie Ratings"
+author: "Cody Stancil, Lulu Ge, Seth Green, Yizhe Ge"
+date: "August 2, 2016"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message=FALSE, warning=FALSE)
+```
+
+# Data Merging
+The following data sets were files separated by different delimiters; therefore, we used the read.csv as a method to read in each dataset assigning appropriate variable names.  From there, we were able to merge each data set by the `reviewer id` and then the `movie id`. The last data to integrate into the new master data set was the zip code information. We were able to use the zip code information to assign each reviewer to a state in the United States or Canada. After merging all of these data sets the new master data set contained a plethora of information about both the reviewer and the movie that was used to guide our analysis. 
+
+```{r}
+library(dplyr)
+#install.packages("lubridate")
+library(lubridate)
+library(gridExtra)
+
+zipcodes= read.csv("zipcodes.txt", header = TRUE)
+reviewer= read.csv("reviewers.txt", header= FALSE, sep = "|")
+review= read.csv("reviews.txt", header= FALSE, sep = "\t")
+genres= read.csv("genres.txt", header=FALSE, sep= "|" )
+
+names(reviewer) = c("reviewer id", "age", "gender", "occupation", "zip code")
+names(review) = c("reviewer id", "movie id", "rating", "timestamp.")
+movie_gen= c("movie id", "movie title","release date","video release date",
+             "IMDb URL","unknown","Action","Adventure","Animation","Children's","Comedy","Crime","Documentary","Drama","Fantasy", 
+             "Film-Noir","Horror","Musical","Mystery","Romance","Sci-Fi","Thriller","War","Western")
+names(genres)= movie_gen
+genres$`video release date`=year(dmy(genres$`release date`))
+
+reviews2= merge(reviewer, review, by= "reviewer id")
+
+#Final merged data set. Have not put zipcode informtion in this yet. 
+reviews3= merge(reviews2, genres, by= "movie id")
+
+zipsU <- zipcodes[zipcodes$Country == 'US',c('Zipcode', 'State')]
+zipsU <- zipsU[!duplicated(zipsU$Zipcode),]
+zipsU$State <- as.character(zipsU$State)
+zipsU[!zipsU$State %in% c(state.abb, 'DC'), 2] <- 'Territory'
+names(zipsU) <- c(names(reviews3)[6], 'Location')
+zipsU$`zip code` <- as.character(zipsU$`zip code`)
+for (i in 1:nrow(zipsU)) {
+  while (nchar(zipsU$`zip code`[i]) < 5) {
+    zipsU$`zip code`[i] <- paste('0', zipsU$`zip code`[i], sep='')
+  }
+}
+
+reviews3$`zip code` <- as.character(reviews3$`zip code`)
+
+reviewsMaster <- merge(reviews3, zipsU, by= 'zip code', all.x = T)
+reviewsMaster$Location[is.na(reviewsMaster$Location)] <- 'other'
+reviewsMaster <- reviewsMaster[order(reviewsMaster$`movie id`), ]
+
+reviewsMaster$Location[grepl('[A-Za-z]', reviewsMaster$`zip code`)] <- "Canada"
+
+# checked to see if there was any territory data. Can't find any
+terrzips <- zipsU[!zipsU$Location %in% c(state.abb, 'DC'), 1]
+#reviewsMaster$`zip code`[reviewsMaster$`zip code` %in% terrzips]
+```
+
+# Occupation, Gender, Age versus Ratings in General
+We first inspected the relationship between different variables and ratings. Among all occupations, lawyer, doctor, and educator have the highest average ratings. For genders, no clear difference was observed between men and women. We assumed that gender does not affect ratings in general. For age group, we saw that older reviewers tend to have higher average ratings. We concluded that older people tend to be more generous on rating the movies.
+
+```{r}
+# join genre and review
+df1 <- left_join(genres, review, by="movie id")
+
+for (i in c(6:24)){
+        df1[,i] <- factor(df1[, i])
+}
+
+library(lubridate)
+df1 <- df1 %>% 
+        mutate(`release date` = dmy(`release date`))
+
+# join df1 and reviewer
+df2 <- left_join(df1, reviewer, by="reviewer id") %>% 
+        mutate(`zip code` = as.numeric(as.character(`zip code`)))
+
+# lat and lon
+latlon <- zipcodes %>% 
+        group_by(Zipcode) %>% 
+        summarize(Lat = mean(Lat), Lon = mean(Long), State = first(State))
+
+# join latlon and df2
+df3 <- left_join(df2, latlon, by=c("zip code" = "Zipcode"))
+
+```
+
+```{r, fig.align="center", fig.width=6, fig.height=1.5}
+library(ggplot2)
+df3.occ <- df3 %>% 
+        group_by(occupation) %>% 
+        summarize(avg.rating = mean(rating)) %>% 
+        arrange(avg.rating)
+occ <- as.character(df3.occ$occupation)
+df3.occ$occupation <- factor(df3.occ$occupation, levels=occ)
+p1 <- ggplot(data=df3.occ, aes(x = occupation, y = avg.rating))+
+        geom_bar(stat="identity", fill = "lightblue", col = "black")+
+        coord_flip(ylim = c(2.5,4)) +
+        labs(list(y = "Average Rating", x = "Occupation")) +
+        theme(axis.title = element_text(size=8),
+              axis.text = element_text(size=4),
+              legend.position="none")
+
+library(ggplot2)
+df3.gender <- df3 %>% 
+        group_by(gender) %>% 
+        summarize(avg.rating = mean(rating)) %>% 
+        arrange(avg.rating)
+gender <- as.character(df3.gender$gender)
+df3.gender$gender <- factor(df3.gender$gender, levels=gender)
+p2 <- ggplot(data=df3.gender, aes(x = gender, y = avg.rating))+
+        geom_bar(stat="identity", fill = "lightblue", col = "black")+
+        labs(list(x = "Gender", y = "Average Rating"))+
+        coord_flip(ylim = c(3, 4)) +
+        theme(axis.title = element_text(size=8),
+              axis.text = element_text(size=5),
+              legend.position="none")
+
+df3.age <- df3 %>% 
+        mutate(ageGroup = cut(age, breaks=5, dig.lab=2)) %>% 
+        group_by(ageGroup) %>% 
+        summarize(avg.rating = mean(rating), sd.rating = sd(rating)) %>% 
+        arrange(avg.rating)
+ageGroup <- as.character(df3.age$ageGroup)
+df3.age$ageGroup <- factor(df3.age$ageGroup, levels = ageGroup)
+p3 <- ggplot(df3.age, aes(x = ageGroup, y = avg.rating))+
+        geom_bar(stat="identity", fill = "lightblue", col = "black")+
+        labs(list(x = "Age Group", y = "Average Rating"))+
+        coord_flip(ylim = c(3, 4)) +
+        theme(axis.title = element_text(size=8),
+              axis.text = element_text(size=5),
+              legend.position="none")
+grid.arrange(p1, p2, p3, nrow=1, ncol=3)
+```
+
+# Further Inspection on Gender versus Ratings
+In order to inspect the gender differences, we zoomed into a more granular level. We computed the average ratings for male and female based on genres. The following two datasets show the top ten rated genres for male and female, separately. They show the clear differences: comparing to female, male likes Film-Noir, Documentary, Mystery and Crime more. Western and Sci-Fi appear only in the top-ten list for male, and Musical and Adventure appear only in the top-ten list for female.
+
+\begin{center}
+        \includegraphics[width=72mm]{Gender}
+\end{center}
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(gridExtra)
+library(grid)
+
+df4 <- df3 %>% 
+        select(unknown:Western, rating, gender) %>% 
+        gather(genre, isOrNot, unknown:Western) %>% 
+        filter(isOrNot != 0) %>% 
+        group_by(gender, genre) %>% 
+        summarize(avgRating = mean(rating)) %>% 
+        arrange(desc(avgRating)) %>% 
+        slice(1:10)
+
+df4.male <- df4 %>% 
+        filter(gender=="M")
+df4.female <- df4 %>% 
+        filter(gender=="F")
+
+mytheme <- gridExtra::ttheme_default(
+        core = list(fg_params=list(cex = 0.6)),
+        colhead = list(fg_params=list(cex = 0.6)),
+        rowhead = list(fg_params=list(cex = 0.6)))
+
+t1 <- tableGrob(df4.male, theme = mytheme)
+t2 <- tableGrob(df4.female, theme = mytheme)
+#grid.arrange(t1, t2, nrow=1, ncol=2)
+```
+
+# Genres versus Ratings
+What seems associated with a high rating? - Genre
+
+If we group the movies by genres (action, animation, comedy, etc), we find out that the top four genres of movies that have highest average ratings are Film Noir, War, Drama, and Documentary.
+
+```{r, fig.align="center", fig.width=5, fig.height=1.8}
+library(ggplot2)
+library(scales)
+library(tidyr)
+category <- c("unknown","Action","Adventure","Animation","Children's","Comedy","Crime",
+              "Documentary","Drama","Fantasy","Film-Noir","Horror","Musical","Mystery",
+              "Romance","Sci-Fi","Thriller","War","Western")
+
+x <- reviewsMaster %>% 
+        select(unknown:Western, rating) %>% 
+        gather(genre, num, unknown:Western) %>% 
+        filter(num!=0) %>% 
+        group_by(genre) %>% 
+        summarize(avgrate = mean(rating)) %>% 
+        arrange(avgrate)
+
+genre.seq <- x$genre
+x$genre <- factor(x$genre, levels=genre.seq)
+
+ggplot(data=x, aes(x=genre, y=avgrate, fill=genre))+
+        geom_bar(stat="identity") +
+        labs(list(x="", y="Average Rating"))+
+        coord_flip() +
+        scale_y_continuous(limits = c(3,4), oob=rescale_none) +
+        theme(axis.title = element_text(size=8),
+              axis.text = element_text(size=5),
+              legend.position="none")
+```
+
+If we compare percentage of top ratings (rating = 5) of each genre, we can see that the first top four genres of movies that have highest percent of high ratings are Film Noir, War, Documentary, and Drama. Although the sorting order is slightly different from the order in average rating, the genre list stays the same. So we may assume that movies with styles Film Noir, War, Drama, and Documentary are more likely to receive high ratings.
+
+```{r, fig.align="center", fig.width=5, fig.height=1.8}
+#percentage of top rating group by category
+x1 <- reviewsMaster %>% 
+        select(unknown:Western, rating) %>% 
+        gather(genre, num, unknown:Western) %>% 
+        filter(num!=0) %>% 
+        group_by(genre) %>% 
+        summarize(count = n())
+
+x2 <- reviewsMaster %>% 
+        select(unknown:Western, rating) %>% 
+        gather(genre, num, unknown:Western) %>% 
+        filter(num!=0 & rating==5) %>% 
+        group_by(genre) %>% 
+        summarize(five = n()) %>% 
+        inner_join(x1, by="genre") %>% 
+        mutate(percentFive = five/count) %>% 
+        arrange(percentFive)
+
+genre.seq1 <- x2$genre
+x2$genre <- factor(x2$genre, levels=genre.seq1)
+
+ggplot(data=x2, aes(x=genre, y=percentFive, fill=genre))+
+        geom_bar(stat="identity") +
+        labs(list(x="", y="Probability of Rating 5"))+
+        coord_flip() +
+        scale_y_continuous(limits = c(0.1,0.35), oob=rescale_none) +
+        theme(axis.title = element_text(size=8),
+              axis.text = element_text(size=5),
+              legend.position="none")
+```
+
+# Geography: Comparing States
+We decided to look at the geographical location of the person giving the review, to see if that had any correlation to the score. Since almost 95% of the data was from the continental United States, we limited our analysis to only those reviewers.
+
+First we calculated an average review score for each state and plotted those scores on a map.
+
+```{r map, fig.width=4, fig.height=2, fig.align="center"}
+#calculate the average rating and the percentage of 5-star ratings for each state
+stateStats <- data.frame(state = state.abb, avg=0, percFive=0, users=0, stringsAsFactors = F)
+for (i in 1:nrow(stateStats)) {
+  stateRating <- reviewsMaster$rating[reviewsMaster$Location==stateStats$state[i]]
+  stateStats$avg[i] <- mean(stateRating)
+  stateStats$percFive[i] <- sum(stateRating==5)/length(stateRating)
+  stateUsers <- reviewsMaster[reviewsMaster$Location==stateStats$state[i], c(3, ncol(reviewsMaster))]
+  stateStats$users[i] <- length(unique(stateUsers$`reviewer id`))
+}
+
+#change the state abbreviations to lower case full names (for maps package)
+for (i in 1:nrow(stateStats)) {
+  stateStats$state[i] <- tolower(state.name[grep(stateStats$state[i], state.abb)])
+}
+
+library(maps)
+library(ggplot2)
+
+# get state map data
+states_map <- map_data("state")
+
+#plot average rating
+ggplot(stateStats, aes(map_id = state)) +
+  geom_map(aes(fill = avg), map = states_map) +
+  labs(list(y="", x="")) +
+  scale_y_continuous(breaks=NULL) + scale_x_continuous(breaks=NULL) +
+  scale_fill_continuous(name="") +
+  expand_limits(x = states_map$long, y = states_map$lat)
+```
+
+While there is no discernable geographic trend, certain states stick out as having slightly higher averages, notably West Virginia, South Dakota, and Maine. However, the mean rating for our whole sample was 3.53, with a standard deviation of 1.126. When you consider that, no state is actually more than one standard deviation above (or below) the total average.
+
+Next we decided to look at the percentage of reviews from a given state that were 5-star, hoping that this would show a little more variability.
+
+```{r map2, fig.width=4, fig.height=2, fig.align="center"}
+
+#plot percentage of 5-star ratings
+ggplot(stateStats, aes(map_id = state)) +
+  geom_map(aes(fill = percFive), map = states_map) +
+  labs(list(y="", x="")) +
+  scale_y_continuous(breaks=NULL) + scale_x_continuous(breaks=NULL) + 
+  scale_fill_continuous(breaks= c(.65, .5, .35, .20), 
+                        labels=c("65%", "50%", "35%","20%"), 
+                        name="") +
+  expand_limits(x = states_map$long, y = states_map$lat)
+```
+
+There is indeed slightly more variability, but most notable is the outlier of West Virginia. About 70% of movie reviews coming from West Virginia are 5-star! Any jokes about mountain living aside, this may indicate a problem with our sample. Indeed when we take a quick look at how many unique reviewers there are in some of these states, we get a clue.
+
+```{r maps3}
+#show unique users for states
+#head(stateStats[order(stateStats$percFive, decreasing=T), c(1,3,4)])
+```
+
+In the entire data set, there are only three unique reviewers from West Virginia. Presumably one, or maybe two, of them are very enthusiastic in their ratings. With such a small sample, this enthusiasm does not get evened out by other observations. In fact, it looks like a lot of states are sparsely represented. South Dakota, for instance, is represented by only a single reviewer. This casts some doubt on this entire line of analysis, since our sample may be entirely too small to gain any real geographical insights.
+
+# History: Looking at Movies by Release Date
+For this section, we grouped the movies by the year that they were released (the `video release date` variable). We then plotted average ratings for the group of movies released in a given year.
+
+```{r year, fig.height=1.5, fig.width=4, fig.align="center"}
+# need to load reviewsMaster
+library(dplyr)
+library(ggplot2)
+# get the average rating for each release year
+year <- group_by(reviewsMaster, `video release date`)
+yearSum <- summarize(year, mean(rating))
+names(yearSum) <- c("Release Year", "Average Rating")
+yearSum <- yearSum[!is.na(yearSum$`Release Year`),]
+
+
+#plot data
+ggplot(yearSum, aes(x=`Release Year`, y=`Average Rating`)) + 
+  geom_point() + 
+  geom_smooth() +
+        theme(axis.title = element_text(size=8))
+```
+
+At first glance, it appears that older movies are held in higher estimation by our reviewers. The smoothing line indicates that reviewers were especially hard on movies from the past decade or so (the data was collected in the late 1990's).
+
+We figured there were probably some years that had very few movies and were perhaps obscuring a real trend in the data, so we removed any years with only one or two movies in them and then re-plotted the data.
+
+```{r year2, fig.align="center", fig.width=4, fig.height=1.5}
+# filter out any year that had less than three movies represented in the data
+uniqMovies <- reviewsMaster[!duplicated(reviewsMaster$`movie id`),]
+#table(uniqMovies$`video release date`)
+removeDF <- data.frame(table(uniqMovies$`video release date`))
+remove <- removeDF$Var1[removeDF$Freq < 3]
+remove <- as.numeric(as.character(remove))
+yearSumSparse <- yearSum[!yearSum$`Release Year` %in% remove, ]
+
+#plot data with sparse years removed
+ggplot(yearSumSparse, aes(x=`Release Year`, y=`Average Rating`)) + 
+  geom_point() + 
+  geom_smooth() +
+        theme(axis.title = element_text(size=8))
+```
+
+Removing the sparse years does indeed make the trend much more pronounced. Movies from the 1940's through 1960's are fairly steadily highly rated. This begins to to slip just a little in the 1970's and then takes a real nose dive in the 1980's and 1990's. Are movies from the early days of Hollywood really that much better? Do we just look back with rose-coloured glasses?
+
+We had a hunch, based on our earlier exclusion of sparse years, that maybe there was a discrepency in how many movies were rated from back in the "Golden Days" vs. more recent films. To confirm this, we plotted the number of movies (in our data set) released each year.
+
+```{r year3, fig.align="center", fig.width=5, fig.height=2}
+# count how many movies from each release year are reviewed in our data set
+yearCount <- data.frame(table(uniqMovies$`video release date`))
+names(yearCount) <- c("Year", "# of Movies")
+
+ggplot(yearCount) + 
+  geom_bar(stat="identity", aes(x=Year, y=`# of Movies`)) +
+  scale_x_discrete(breaks=seq(1940, 2000, by=10)) +
+        theme(axis.title = element_text(size=8))
+```
+
+The conclusion is overwhelming. Starting in the 1993, the number of movies per year in our data set shoots up by a factor of more than 10. In some cases, there are roughly 100 times as many movies from a given year in the 90's than as some earlier years.
+
+This undermines a persistent falacy that movies (and music and fashion, etc.) used to be better in the good old days. It's really just that we only remember the good stuff. People are still watching 4- and 5-star movies from 50 years ago, but they're not watching (or reviewing) anything bad. Contrast that with the most recent several years, when people are watching a *ton* of different movies: good ones, bad ones, and everything in between. Also, the fact that the jump in count jumps so dramatically at 1993 indicates that maybe this is not a purely random sample of data. 
+
+# Summary
+
+In conclusion, while it is difficult to actually predict a movie's rating based on this data, we certainly identified some trends. For instance, certain genres (Musicals, Westerns, Sci-Fi) were rated differently by men and women, and certain occupations (doctors, lawyers, the unemployed) rate movies slightly higher. The strongest trend we observed was a higher average rating for older movies, as opposed to movies from the 1980's and 1990's. We discussed a possible explanation for that trend above. However, we identified a serious problem with sample size and skewed sampling in many of the variables. For the year analysis, roughly 75% of our data is for movies released between 1993 and 1998. For the occupation analysis, our highest raters (unemployed) and lowest (healthcare) are only represented by 10 and 16 reviewers respectively. Before drawing any real conclusions, some more research into the source data, and some selective subsetting of the data, could prove fruitful.
+
+
+\newpage
+# Appendix
+Question 1:   
+Which reviewer reviewed the most movies?   
+Answer:  
+```{r}
+#1)
+num_reviews=as.data.frame(table(reviews3$`reviewer id`))
+x <- num_reviews$Var1[num_reviews$Freq==sort(num_reviews$Freq)[length(num_reviews$Freq)]] 
+paste("Reviewer ID: ", as.numeric(as.character(x)), sep="")
+#reviewer 405 reviewed the most movie (737).
+```
+
+Question 2:   
+Which state/territory/Canada produced the top-5 most reviews?    
+Answer:    
+```{r}
+#2)
+Top5 <- as.data.frame(table(reviewsMaster$Location))
+Top5 <- Top5[order(Top5$Freq, decreasing=T),]
+print(Top5[1:5,])
+# Var1  Freq
+# CA 13842
+# MN  7635
+# NY  6882
+# IL  5740
+# TX  5042
+```
+
+
+Question 3:   
+What percentage of reviews involved movies classified in at least two genres?   
+Answer:   
+```{r}
+#3)
+genres["Sum Genres"] = rowSums(genres[,6:24])
+moviegenre <- merge(genres, review, by='movie id')
+proportion_greater_equal2= sum(moviegenre$`Sum Genres`>=2)/nrow(moviegenre)
+paste(round(proportion_greater_equal2*100,2), "%", sep="")
+#69.94%
+```
+
+Question 4:   
+What percentage of movies have 1, 2, 3, ... reviews? (Need a percentage for each.)   
+Answer:   
+```{r}
+#4)
+movies= as.data.frame(table(reviews3$`movie id`))
+new= as.data.frame(table(movies$Freq))
+new["Percentage"]= new$Freq/length(movies$Var1)*100
+names(new)= c("Number of Reviews", "Freq", "Percentage")
+x <- new %>% 
+        select(`Number of Reviews`, Percentage)
+print(x, row.names = FALSE)
+```
+
